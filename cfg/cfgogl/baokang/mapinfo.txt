@@ -150,19 +150,6 @@
 		"start_extra_dist"	"200.000000"
 		"end_dist"			"150.000000"
 		"horde_limit"		"240"
-		"tank_ban_flow"
-		{
-			"One way drop"
-			{
-				"min"		"38"
-				"max"		"41"
-			}
-			"Coaster Start"
-			{
-				"min"		"56"
-				"max"		"100"
-			}
-		}
 		"witch_ban_flow"
 		{
 			"Start of coaster"
