@@ -23,6 +23,20 @@
 			"name" "1v1 ZoneMod"
 		}
 	}
+	"BaoKang (包抗) Configs"
+	{
+		"baokang"
+		{
+			"name" "包抗模式（zm改）"
+		}
+	}
+	"Pure (纯净) Configs"
+	{
+		"pure"
+		{
+			"name" "包抗模式（原版改）"
+		}
+	}
 	"NeoMod Configs"
 	{
 		"neomod"

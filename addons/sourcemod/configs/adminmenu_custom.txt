@@ -5,8 +5,91 @@
 //
 // Note: This file must be in Valve KeyValues format (no multiline comments)
 //
+// Added 2026-09-08: match/mode management + broadcast quick actions.
+// - "execute" "server" items run through the server console (rcon), they do
+//   NOT require the player to own the corresponding chat command flags; the
+//   "admin" value is only used as the access gate.
+// - "execute" "player" items run as the admin's own chat command.
+//
+// All admin groups are granted via the gate commands below (sm_map / sm_say),
+// which the "Full Admins" group already has.
 
 "Commands"
 {
-
+	"比赛与模式"
+	{
+		// confogl 在"比赛已加载"时 sm_forcematch 是空操作,
+		// 切模式要先点"卸载当前比赛模式"再选目标模式.
+		"卸载当前比赛模式（回到无模式空服）"
+		{
+			"cmd"		"sm_resetmatch"
+			"admin"		"sm_map"
+			"execute"	"server"
+		}
+		"切换/加载比赛模式"
+		{
+			"cmd"		"sm_forcematch #1"
+			"admin"		"sm_map"
+			"execute"	"server"
+			"1"
+			{
+				"type"		"list"
+				"title"		"选择要加载的比赛模式"
+				"1"		"zonemod"
+				"1."		"ZoneMod"
+				"2"		"zoneretro"
+				"2."		"ZoneMod Retro"
+				"3"		"zm3v3"
+				"3."		"3v3 ZoneMod"
+				"4"		"zm2v2"
+				"4."		"2v2 ZoneMod"
+				"5"		"zm1v1"
+				"5."		"1v1 ZoneMod"
+				"6"		"neomod"
+				"6."		"NeoMod"
+				"7"		"nextmod"
+				"7."		"NextMod"
+				"8"		"nextmod3v3"
+				"8."		"3v3 NextMod"
+				"9"		"nextmod2v2"
+				"9."		"2v2 NextMod"
+				"10"		"nextmod1v1"
+				"10."		"1v1 NextMod"
+				"11"		"pmelite"
+				"11."		"Promod Elite"
+				"12"		"deadman"
+				"12."		"Deadman"
+				"13"		"acemodrv"
+				"13."		"Acemod RV"
+				"14"		"amrv3v3"
+				"14."		"3v3 Acemod RV"
+				"15"		"amrv2v2"
+				"15."		"2v2 Acemod RV"
+				"16"		"amrv1v1"
+				"16."		"1v1 Acemod RV"
+				"17"		"eq"
+				"17."		"Equilibrium"
+				"18"		"eq3v3"
+				"18."		"3v3 EQ"
+				"19"		"eq2v2"
+				"19."		"2v2 EQ"
+				"20"		"eq1v1"
+				"20."		"1v1 EQ"
+				"21"		"apex"
+				"21."		"Apex"
+				"22"		"zonehunters"
+				"22."		"ZoneHunters"
+				"23"		"zh3v3"
+				"23."		"3v3 ZoneHunters"
+				"24"		"zh2v2"
+				"24."		"2v2 ZoneHunters"
+				"25"		"zh1v1"
+				"25."		"1v1 ZoneHunters"
+				"26"		"baokang"
+				"26."		"包抗（zm 改）"
+				"27"		"pure"
+				"27."		"纯净化（原版改）"
+			}
+		}
+	}
 }
