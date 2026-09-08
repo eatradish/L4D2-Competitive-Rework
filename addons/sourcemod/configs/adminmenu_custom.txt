@@ -92,4 +92,53 @@
 			}
 		}
 	}
+
+	// 队伍管理：复用 playermanagement 插件的 sm_swapto/sm_swapteams
+	// （由 generalfixes/sharedplugins 加载）。"type" "player" + "method" "userid"
+	// 会弹出玩家列表，选人后把 #<userid> 填进命令里的 @1。
+	"队伍管理"
+	{
+		"移入旁观"
+		{
+			"cmd"		"sm_swapto 1 @1"
+			"admin"		"sm_swapto"
+			"execute"	"player"
+			"1"
+			{
+				"type"		"player"
+				"method"	"userid"
+				"title"		"选择要移入旁观的玩家"
+			}
+		}
+		"移入幸存者队"
+		{
+			"cmd"		"sm_swapto 2 @1"
+			"admin"		"sm_swapto"
+			"execute"	"player"
+			"1"
+			{
+				"type"		"player"
+				"method"	"userid"
+				"title"		"选择要移入幸存者队的玩家"
+			}
+		}
+		"移入感染者队"
+		{
+			"cmd"		"sm_swapto 3 @1"
+			"admin"		"sm_swapto"
+			"execute"	"player"
+			"1"
+			{
+				"type"		"player"
+				"method"	"userid"
+				"title"		"选择要移入感染者队的玩家"
+			}
+		}
+		"交换双方阵容"
+		{
+			"cmd"		"sm_swapteams"
+			"admin"		"sm_swapteams"
+			"execute"	"player"
+		}
+	}
 }
