@@ -5,11 +5,17 @@
 //
 // Note: This file must be in Valve KeyValues format (no multiline comments)
 //
-// Added 2026-09-08: match/mode management + broadcast quick actions.
+// Added 2026-09-08: match/mode management.
 // - "execute" "server" items run through the server console (rcon), they do
 //   NOT require the player to own the corresponding chat command flags; the
 //   "admin" value is only used as the access gate.
-// - "execute" "player" items run as the admin's own chat command.
+//
+// IMPORTANT - do NOT add items with a "player" submenu here:
+//   adminmenu's ParamCheck() tests for the next placeholder with StrContains(),
+//   so "sm_swapto 2 @1" becomes "sm_swapto 2 #21" and the search for "#2"
+//   matches inside "#21" -> it thinks another parameter is pending and re-opens
+//   the menu forever. Commands that need a player argument belong in a native
+//   TopMenu plugin instead (see l4d_team_menu.sp for team moves).
 //
 // All admin groups are granted via the gate commands below (sm_map / sm_say),
 // which the "Full Admins" group already has.
@@ -93,52 +99,8 @@
 		}
 	}
 
-	// 队伍管理：复用 playermanagement 插件的 sm_swapto/sm_swapteams
-	// （由 generalfixes/sharedplugins 加载）。"type" "player" + "method" "userid"
-	// 会弹出玩家列表，选人后把 #<userid> 填进命令里的 @1。
-	"队伍管理"
-	{
-		"移入旁观"
-		{
-			"cmd"		"sm_swapto 1 @1"
-			"admin"		"sm_swapto"
-			"execute"	"player"
-			"1"
-			{
-				"type"		"player"
-				"method"	"userid"
-				"title"		"选择要移入旁观的玩家"
-			}
-		}
-		"移入幸存者队"
-		{
-			"cmd"		"sm_swapto 2 @1"
-			"admin"		"sm_swapto"
-			"execute"	"player"
-			"1"
-			{
-				"type"		"player"
-				"method"	"userid"
-				"title"		"选择要移入幸存者队的玩家"
-			}
-		}
-		"移入感染者队"
-		{
-			"cmd"		"sm_swapto 3 @1"
-			"admin"		"sm_swapto"
-			"execute"	"player"
-			"1"
-			{
-				"type"		"player"
-				"method"	"userid"
-				"title"		"选择要移入感染者队的玩家"
-			}
-		}
-		"交换双方阵容"
-		{
-			"cmd"		"sm_swapteams"
-			"admin"		"sm_swapteams"
-			"execute"	"player"
-		}
-	}
+	// 队伍管理已移至 l4d_team_menu.smx（原生 TopMenu，挂在 Player Commands 下）。
+	// 原因：adminmenu_custom 的 ParamCheck() 用 StrContains 做占位符子串匹配，
+	// 命令 "sm_swapto 2 @1" 选人后变成 "sm_swapto 2 #21"，检测 "#2" 会命中 "#21"
+	// -> 误判还有参数 -> 反复重弹菜单。原生菜单没有占位符解析，不会出现该问题。
 }
