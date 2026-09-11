@@ -28,6 +28,31 @@
 		"en"		"[{olive}Readyup{default}] Wait for another {blue}{1}s {default}to call a vote."
 	}
 	
+	"StartVoteTitle"
+	{
+		"en"		"Force start? (teams are not full)"
+	}
+	
+	"StartVoteAccepted"
+	{
+		"en"		"The round will start soon!"
+	}
+	
+	"StartVoteUnavailable"
+	{
+		"en"		"[{olive}Readyup{default}] The start vote is not available right now."
+	}
+	
+	"StartVoteSpectator"
+	{
+		"en"		"[{olive}Readyup{default}] Spectators cannot call the start vote."
+	}
+	
+	"StartVoteTeamsFull"
+	{
+		"en"		"[{olive}Readyup{default}] The start vote is only available when the teams are not full."
+	}
+	
 	"Player marked unready"
 	{
 		"#format"	"{1:N}"

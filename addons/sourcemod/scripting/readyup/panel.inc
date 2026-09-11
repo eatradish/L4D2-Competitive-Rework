@@ -28,6 +28,7 @@ void InitPanel()
 		cmdFooter.Add("->7. !lerps");
 		cmdFooter.Add("->8. !secondary");
 		cmdFooter.Add("->9. !forcestart / !fs");
+		cmdFooter.Add("->10. !votestart / !vs");
 	}
 	
 	curCmd = 0;

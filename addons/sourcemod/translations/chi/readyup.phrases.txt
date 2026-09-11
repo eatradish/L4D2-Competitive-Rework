@@ -28,6 +28,31 @@
 		"chi"		"[{olive}Readyup{default}] 请等待 {blue}{1}秒 {default}以发起下一轮投票"
 	}
 	
+	"StartVoteTitle"
+	{
+		"chi"		"双方不满人，是否开始游戏？"
+	}
+	
+	"StartVoteAccepted"
+	{
+		"chi"		"游戏即将开始！"
+	}
+	
+	"StartVoteUnavailable"
+	{
+		"chi"		"[{olive}Readyup{default}] 当前无法发起开始投票"
+	}
+	
+	"StartVoteSpectator"
+	{
+		"chi"		"[{olive}Readyup{default}] 旁观者不能发起开始投票"
+	}
+	
+	"StartVoteTeamsFull"
+	{
+		"chi"		"[{olive}Readyup{default}] 仅双方不满人时可以发起开始投票"
+	}
+	
 	"Player marked unready"
 	{
 		"#format"	"{1:N}"

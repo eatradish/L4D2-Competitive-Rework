@@ -80,7 +80,7 @@ ConVar
 	// sound
 	l4d_ready_enable_sound, l4d_ready_notify_sound, l4d_ready_countdown_sound, l4d_ready_live_sound, l4d_ready_autostart_sound, l4d_ready_chuckle, l4d_ready_secret,
 	// action
-	l4d_ready_delay, l4d_ready_force_extra, l4d_ready_autostart_delay, l4d_ready_autostart_wait, l4d_ready_autostart_min, l4d_ready_unbalanced_start, l4d_ready_unbalanced_min;
+	l4d_ready_delay, l4d_ready_force_extra, l4d_ready_autostart_delay, l4d_ready_autostart_wait, l4d_ready_autostart_min, l4d_ready_unbalanced_start, l4d_ready_unbalanced_min, l4d_ready_startvote;
 
 // Server Name
 ConVar
@@ -139,6 +139,7 @@ char g_sDisruptReason[disruptType_SIZE][] =
 #include "readyup/setup.inc"
 #include "readyup/sound.inc"
 #include "readyup/util.inc"
+#include "readyup/votestart.inc"
 
 // ========================
 //  Plugin Setup
