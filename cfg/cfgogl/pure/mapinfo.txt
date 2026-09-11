@@ -6,12 +6,32 @@
 // - c8m4_interior (No Mercy 4): same class of stuck tank spawn.
 // Backport of the per-map fix every other mode uses (tank_z_fix / max_tank_z /
 // tank_warpto) - teleports such a tank back to the fight on spawn.
-// Bugfix only: no start/end points, no tank_ban_flow etc. so nothing else changes.
+// Bugfix only: no start/end points, no max_distance - nothing else changes.
+// Exception: c1m1_hotel also carries tank_ban_flow (same bans as zonemod/baokang:
+// no flow tank at the start, in the elevator stretch or after the kitchen).
 	"c1m1_hotel"
 	{
 		"tank_z_fix"		"1"
 		"max_tank_z"		"1200.000000"
 		"tank_warpto"		"2168.357666 5803.427734 2464.031250"
+		"tank_ban_flow"
+		{
+			"Instant spawns"
+			{
+				"min"		"0"
+				"max"		"25"
+			}
+			"Before elevator top, after elevator bottom"
+			{
+				"min"		"33"
+				"max"		"79"
+			}
+			"After kitchen"
+			{
+				"min"		"85"
+				"max"		"100"
+			}
+		}
 	}
 // c8m4_interior (No Mercy 4): same stuck-spawn fix, backported from zonemod/baokang.
 	"c8m4_interior"
