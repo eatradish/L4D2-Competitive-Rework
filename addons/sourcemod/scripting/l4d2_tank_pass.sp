@@ -22,7 +22,7 @@
 //      trigger = item_pickup 事件里 item 为 "tank_claw"（引擎的"获得坦克"信号，
 //      仓库里 l4d2lib/tanks.sp 也用同一信号跟踪坦克换人），另加
 //      L4D_OnReplaceTank 兜底（延迟 1 秒检查，防止控制权切换还没生效）。
-//      每只坦克只自动弹一次；输入 !tankpass 可手动重开（仅当前坦克可用）。
+//      每只坦克只自动弹一次，不提供手动呼出/重开（避免拿到坦克后随时换人）。
 //   2) 面板选项：
 //        - "自己玩（保留坦克控制）"  -> 关掉面板，控制保留（超时/ESC 同效）
 //        - 选择某个队友              -> 发起队内投票
@@ -69,8 +69,7 @@ public void OnPluginStart()
 	HookEvent("player_bot_replace", Event_PlayerBotReplace, EventHookMode_Post);
 	HookEvent("round_end",          Event_RoundEnd, EventHookMode_PostNoCopy);
 
-	RegConsoleCmd("sm_tankpass", Cmd_TankPass, "坦克移交面板：选队友发起队内投票，或自己玩");
-	RegConsoleCmd("sm_passtank", Cmd_TankPass, "坦克移交面板：选队友发起队内投票，或自己玩");
+	// 面板只在拿到坦克时自动弹一次；不提供手动命令重开（防止随时换人）。
 
 	// 插件热载/中途加载时，如果场上已有真人坦克，也给他一次面板（便于测试）
 	CreateTimer(2.0, Timer_InitialCheck, _, TIMER_FLAG_NO_MAPCHANGE);
@@ -173,46 +172,16 @@ public void OnClientDisconnect(int client)
 		CancelTankVote("相关玩家已离开");
 }
 
-Action Cmd_TankPass(int client, int args)
-{
-	if (client == 0)
-	{
-		PrintToServer("[TankPass] This command is in-game only.");
-		return Plugin_Handled;
-	}
-
-	if (!g_cvEnable.BoolValue)
-	{
-		CPrintToChat(client, "{blue}[坦克]{default} 坦克移交功能已关闭。");
-		return Plugin_Handled;
-	}
-
-	if (g_bVoteActive)
-	{
-		CPrintToChat(client, "{blue}[坦克]{default} 已有坦克投票进行中，请等待结果。");
-		return Plugin_Handled;
-	}
-
-	if (!IsCurrentTank(client))
-	{
-		CPrintToChat(client, "{blue}[坦克]{default} 你不是当前坦克，无法移交。");
-		return Plugin_Handled;
-	}
-
-	ShowPassPanel(client, true);
-	return Plugin_Handled;
-}
-
 // ---------------------------------------------------------------------------
 // 面板
 // ---------------------------------------------------------------------------
 
-void ShowPassPanel(int tank, bool bForce = false)
+void ShowPassPanel(int tank)
 {
 	if (!g_cvEnable.BoolValue)
 		return;
 
-	if (g_bPanelShown && !bForce)
+	if (g_bPanelShown)
 		return;
 
 	if (!IsCurrentTank(tank))
@@ -251,7 +220,7 @@ void ShowPassPanel(int tank, bool bForce = false)
 	menu.ExitButton = true;
 	menu.Display(tank, TANK_PANEL_TIME);
 
-	CPrintToChat(tank, "{blue}[坦克]{default} 可以{olive}自己玩{default}，或选队友发起{olive}队内投票{default}移交控制权。输入 {olive}!tankpass{default} 可再次打开。");
+	CPrintToChat(tank, "{blue}[坦克]{default} 可以{olive}自己玩{default}，或选队友发起{olive}队内投票{default}移交控制权（每只坦克只会自动弹一次）。");
 }
 
 public int MenuHandler_Pass(Menu menu, MenuAction action, int param1, int param2)
