@@ -18,7 +18,8 @@
 //   * !vk       ：人人可用的踢人投票入口 —— 不带参数弹选人菜单，
 //                 !vk <名字|#userid> 直接发起；和 callvote 走同一套检查、
 //                 同一个原生投票面板。
-//   * !veto     ：取消进行中的投票（默认也能管其它插件发起的 builtinvotes 投票）。
+//   * !veto     ：否决进行中的投票（默认也能管其它插件发起的 builtinvotes 投票）；
+//                 投票已通过、踢出还排在执行队列上的时候，也能把这次踢出撤销。
 //   * !votepass ：强制通过我们发起的踢人投票（其它插件的投票没有外部强制接口，
 //                 拿不到它们的 vote handle，只能用 !veto 取消）。
 //
@@ -43,6 +44,9 @@
 
 #define TEAM_SPECTATOR 1
 
+// 投票通过后到真正踢出的间隔：留一拍让管理员能用 !veto 撤销
+#define KICK_EXEC_DELAY 1.0
+
 ConVar g_cvEnable;
 ConVar g_cvVoteTime;
 ConVar g_cvDelay;
@@ -59,6 +63,8 @@ ConVar g_cvAnnounce;
 bool   g_bVoteActive;      // 我们发起的踢人投票进行中
 bool   g_bVetoed;          // 被 !veto 否决
 bool   g_bForced;          // 被 !votepass 强制通过
+bool   g_bKickPending;     // 投票已通过，踢出动作还排在定时器上（!veto 可以撤销）
+int    g_iPendingUserId;   // 待踢出的目标 userid
 int    g_iInitiator;       // 发起者 client index
 int    g_iTarget;          // 目标 client index
 Handle g_hVote;            // 当前踢人投票 handle
@@ -458,7 +464,10 @@ public void Handler_KickVoteResult(Handle vote, int num_votes, int num_clients, 
 
 		LogMessage("[VoteGuard] 踢人投票通过（同意 %d / 反对 %d）：%L -> %L", yes, no, initiator, target);
 
-		CreateTimer(0.5, Timer_KickTarget, GetClientUserId(target), TIMER_FLAG_NO_MAPCHANGE);
+		// 先排队，1 秒后再踢：这段窗口里 !veto 可以把踢出撤销（否决语义）
+		g_bKickPending = true;
+		g_iPendingUserId = GetClientUserId(target);
+		CreateTimer(KICK_EXEC_DELAY, Timer_KickTarget, g_iPendingUserId, TIMER_FLAG_NO_MAPCHANGE);
 	}
 	else
 	{
@@ -473,6 +482,13 @@ public void Handler_KickVoteResult(Handle vote, int num_votes, int num_clients, 
 
 public Action Timer_KickTarget(Handle timer, int iUserId)
 {
+	// 被 !veto 撤销掉的不再执行（!votepass 和正常通过共用这条路径）
+	if (!g_bKickPending || iUserId != g_iPendingUserId)
+		return Plugin_Stop;
+
+	g_bKickPending = false;
+	g_iPendingUserId = 0;
+
 	int target = GetClientOfUserId(iUserId);
 
 	if (target > 0 && IsClientInGame(target))
@@ -514,7 +530,30 @@ public Action Command_Veto(int client, int args)
 		return Plugin_Handled;
 	}
 
-	// 2) 其它插件发起的 builtinvotes 投票（readyup / 坦克移交等）
+	// 2) 投票已经通过、踢出动作还排在定时器上 —— 否决可以直接撤销
+	if (g_bKickPending)
+	{
+		int target = GetClientOfUserId(g_iPendingUserId);
+
+		g_bKickPending = false;
+		g_iPendingUserId = 0;
+
+		char sAdmin2[MAX_NAME_LENGTH];
+		FormatAdminName(client, sAdmin2, sizeof(sAdmin2));
+
+		if (g_cvAnnounce.BoolValue)
+		{
+			if (target > 0)
+				CPrintToChatAll("{green}[投票]{default} {olive}%s{default} 否决了这次投票：虽然已通过，踢出 {olive}%N{default} 已撤销。", sAdmin2, target);
+			else
+				CPrintToChatAll("{green}[投票]{default} {olive}%s{default} 否决了这次投票，踢出已撤销。", sAdmin2);
+		}
+
+		LogMessage("[VoteGuard] %L 用 !veto 否决了已通过的踢人投票（目标 %L，踢出已撤销）", client, target);
+		return Plugin_Handled;
+	}
+
+	// 3) 其它插件发起的 builtinvotes 投票（readyup / 坦克移交等）
 	if (IsBuiltinVoteInProgress())
 	{
 		if (!g_cvVetoAny.BoolValue)
@@ -535,7 +574,7 @@ public Action Command_Veto(int client, int args)
 		return Plugin_Handled;
 	}
 
-	// 3) SM 自己的投票（basevotes 那套，管理员命令发起）
+	// 4) SM 自己的投票（basevotes 那套，管理员命令发起）
 	if (IsVoteInProgress())
 	{
 		CancelVote();
@@ -592,7 +631,9 @@ public Action Command_VotePass(int client, int args)
 
 	LogMessage("[VoteGuard] %L 用 !votepass 强制通过踢人投票（目标 %L）", client, target);
 
-	CreateTimer(0.5, Timer_KickTarget, GetClientUserId(target), TIMER_FLAG_NO_MAPCHANGE);
+	g_bKickPending = true;
+	g_iPendingUserId = GetClientUserId(target);
+	CreateTimer(KICK_EXEC_DELAY, Timer_KickTarget, g_iPendingUserId, TIMER_FLAG_NO_MAPCHANGE);
 	return Plugin_Handled;
 }
 
@@ -756,6 +797,14 @@ public void OnClientDisconnect(int client)
 		LogMessage("[VoteGuard] 目标 %L 在投票期间断线，取消投票", client);
 
 		CancelBuiltinVote();
+		return;
+	}
+
+	// 已经通过、还没执行的那位离开了：定时器自己会跳过，这里只清状态
+	if (g_bKickPending && client == GetClientOfUserId(g_iPendingUserId))
+	{
+		g_bKickPending = false;
+		g_iPendingUserId = 0;
 	}
 }
 
@@ -765,6 +814,8 @@ public void OnMapEnd()
 	g_bVoteActive = false;
 	g_bVetoed = false;
 	g_bForced = false;
+	g_bKickPending = false;
+	g_iPendingUserId = 0;
 	g_iInitiator = 0;
 	g_iTarget = 0;
 }
