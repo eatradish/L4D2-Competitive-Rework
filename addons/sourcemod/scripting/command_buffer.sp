@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"2.9"
+#define PLUGIN_VERSION 		"2.9.1"
 
 /*======================================================================================
 	Plugin Info:
@@ -193,6 +193,12 @@ MRESReturn InsertCommandPost(Handle hReturn, Handle hParams)
 	{
 		g_NextFrame = true;
 		RequestFrame(OnNextFrame);
+
+		char sLog[128];
+		strcopy(sLog, sizeof(sLog), g_sCurrentCommand);
+		ReplaceString(sLog, sizeof(sLog), "\n", " ");
+		ReplaceString(sLog, sizeof(sLog), "\r", "");
+		LogMessage("[CbufFix] command buffer overflow detected; capturing failed commands (first: \"%s\")", sLog);
 	}
 
 	// Debug print
@@ -227,6 +233,10 @@ void OnNextFrame(any na)
 	static char sCommand[ARGS_BUFFER_LENGTH];
 
 	int length = aCmdList.Length;
+
+	char sLog[128];
+	LogMessage("[CbufFix] replaying %d overflowed command(s) (plugin-exec context)", length);
+
 	for( int i = 0; i < length; i++ )
 	{
 		// Debug print
@@ -238,6 +248,11 @@ void OnNextFrame(any na)
 		// Insert
 		aCmdList.GetString(i, sCommand, sizeof(sCommand));
 		InsertServerCommand("%s", sCommand);
+
+		strcopy(sLog, sizeof(sLog), sCommand);
+		ReplaceString(sLog, sizeof(sLog), "\n", " ");
+		ReplaceString(sLog, sizeof(sLog), "\r", "");
+		LogMessage("[CbufFix] exec: \"%s\"", sLog);
 
 		// Flush the command buffer now. Outside of loop doesn't work - the convars would remain incorrect.
 		ServerExecute();
