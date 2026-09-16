@@ -35,6 +35,8 @@
 //   3) sm_watchdog_heal（默认 1）——confoglcompmod 长时间消失时自愈：30 秒先 load_unlock +
 //      重载 left4dhooks/confoglcompmod（模式加载中断后锁会一直挂着，带锁的 load 全部静默
 //      空转）；90 秒还没回来再补 sm plugins refresh 把整个 plugins/ 扫一遍装回来。
+//   4) 状态追踪：left4dhooks / confogl 每次"由有变无 / 由无变有"都会写一行带地图名的日志
+//      （addons/sourcemod/logs），用时间戳抓"是谁在什么时候把 left4dhooks 弄没的"。
 //      （match_vote 的 "Confogl is not available"、连 sm_forcematch 都变 Unknown command
 //       时，没有这条就只能人工进服重载。）
 // =======================================================================================
@@ -45,7 +47,7 @@
 #include <sourcemod>
 #include <confogl>      // LGO_IsMatchModeLoaded / LGO_OnMatchModeUnloaded
 
-#define PLUGIN_VERSION "1.2.0"
+#define PLUGIN_VERSION "1.3.0"
 #define WATCHDOG_TAG   "[ModeWatchdog]"
 #define NATIVE_MATCH_LOADED "LGO_IsMatchModeLoaded"
 #define FORCE_COOLDOWN 60      // 秒：两次自动强制加载之间的最小间隔
@@ -69,6 +71,11 @@ int    g_iLastForceTime = 0;   // 上次自动强制加载的时间（GetTime，
 int    g_iLastHumanTime = 0;   // 最近一次见到真人的时间；0 = 本次加载后还没见过（GetTime，秒）
 int    g_iConfoglMissingSince = 0;  // confogl 原生不可用的起始时间；0 = 正常
 int    g_iLastHealTime = 0;    // 上次自愈动作时间（GetTime，秒）
+
+// ---- 状态追踪：抓 left4dhooks / confogl "由有变无"的瞬间（写进 SM 日志，带地图名）----
+bool g_bLibStateInit = false;  // 首次取值只记录、不比较
+bool g_bL4DHLast     = false;  // 上次检查时 left4dhooks 库是否在
+bool g_bConfoglLast  = false;  // 上次检查时 confogl 原生是否可用
 
 // ---- 空服不休眠（sv_hibernate_when_empty 无条件压 0，见 EnforceNoHibernate）----
 ConVar g_hHibernate = null;
@@ -187,6 +194,7 @@ Action Timer_ApplyPins(Handle hTimer)
 {
     MaybeApplyPins();
     EnforceNoHibernate();
+    TrackLibraryStates();
 
     return Plugin_Stop;
 }
@@ -310,6 +318,8 @@ void RunCheck(bool bIgnoreEmpty)
         return;
     }
 
+    TrackLibraryStates();
+
     char szMode[64];
     g_cvMode.GetString(szMode, sizeof(szMode));
     TrimString(szMode);
@@ -332,6 +342,22 @@ void RunCheck(bool bIgnoreEmpty)
 
     if (ConfoglReady() && LGO_IsMatchModeLoaded())
     {
+        // 保险：模式自己还活着但 left4dhooks 没了（正常情况 confogl 会连带倒下、走上面的自愈；
+        // 这条只兜万一）。只做无锁重载，60 秒最多试一次，避免刷日志。
+        if (!LibraryExists("left4dhooks"))
+        {
+            int iNowL4DH = GetTime();
+            if (g_iLastHealTime == 0 || (iNowL4DH - g_iLastHealTime) >= HEAL_COOLDOWN)
+            {
+                g_iLastHealTime = iNowL4DH;
+                LogMessage("%s mode is loaded but left4dhooks is missing, trying to load it back", WATCHDOG_TAG);
+                ServerCommand("sm plugins load left4dhooks.smx");
+            }
+
+            ScheduleCheck(10.0, "left4dhooks missing while mode loaded");
+            return;
+        }
+
         char szCurrent[64];
         LGO_GetConfigName(szCurrent, sizeof(szCurrent));
 
@@ -839,6 +865,51 @@ void SetConVarStringSilence(ConVar convar, const char[] sValue)
     SetConVarFlags(convar, iFlags & ~FCVAR_NOTIFY);
     SetConVarString(convar, sValue);
     SetConVarFlags(convar, iFlags);
+}
+
+// =======================================================================================
+// 状态追踪（抓 left4dhooks / confogl "由有变无"的瞬间）
+// =======================================================================================
+
+// 每次检查都把 left4dhooks 库与 confogl 原生是否可用记下来；由"在"变"不在"（或反过来）时
+// 写一行带地图/状态/人数的日志 —— 用于定位"是谁在什么时候把它们弄没的"。
+// 消失的那一下还会顺手排一次 5 秒后的检查，让自愈路径（confogl 消失分支）尽快接管。
+void TrackLibraryStates()
+{
+    bool bL4DH    = LibraryExists("left4dhooks");
+    bool bConfogl = ConfoglReady();
+
+    if (g_bLibStateInit)
+    {
+        char szMap[64];
+        GetCurrentMap(szMap, sizeof(szMap));
+
+        if (g_bL4DHLast && !bL4DH)
+        {
+            LogMessage("%s left4dhooks disappeared! (map=%s confogl=%s mode_loaded=%s humans=%d)",
+                WATCHDOG_TAG, szMap, bConfogl ? "yes" : "no",
+                (bConfogl && LGO_IsMatchModeLoaded()) ? "yes" : "no", CountHumans());
+            ScheduleCheck(5.0, "left4dhooks disappeared");
+        }
+        else if (!g_bL4DHLast && bL4DH)
+        {
+            LogMessage("%s left4dhooks is back (map=%s)", WATCHDOG_TAG, szMap);
+        }
+
+        if (g_bConfoglLast && !bConfogl)
+        {
+            LogMessage("%s confogl native disappeared! (map=%s left4dhooks=%s)",
+                WATCHDOG_TAG, szMap, bL4DH ? "yes" : "no");
+        }
+        else if (!g_bConfoglLast && bConfogl)
+        {
+            LogMessage("%s confogl native is back (map=%s)", WATCHDOG_TAG, szMap);
+        }
+    }
+
+    g_bL4DHLast     = bL4DH;
+    g_bConfoglLast  = bConfogl;
+    g_bLibStateInit = true;
 }
 
 bool ConfoglReady()
