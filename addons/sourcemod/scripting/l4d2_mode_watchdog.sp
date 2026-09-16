@@ -32,8 +32,9 @@
 //   2) sm_watchdog_foreign_timeout（默认 120s）——空服时如果跑的仍是别的模式（confogl
 //      的 60s 卸载没发生：被休眠冻住；或空服时从控制台加载、没人离开就不会有 60s 计时器），
 //      超过该秒数就 sm_forcechangematch 切回我们的模式；只在没有真人时生效。
-//   3) sm_watchdog_heal（默认 1）——confoglcompmod 长时间消失时自愈：先试无锁重载，
-//      90 秒还没回来就 load_unlock + sm plugins refresh 把根目录插件整套刷回来。
+//   3) sm_watchdog_heal（默认 1）——confoglcompmod 长时间消失时自愈：30 秒先 load_unlock +
+//      重载 left4dhooks/confoglcompmod（模式加载中断后锁会一直挂着，带锁的 load 全部静默
+//      空转）；90 秒还没回来再补 sm plugins refresh 把整个 plugins/ 扫一遍装回来。
 //      （match_vote 的 "Confogl is not available"、连 sm_forcematch 都变 Unknown command
 //       时，没有这条就只能人工进服重载。）
 // =======================================================================================
@@ -44,12 +45,12 @@
 #include <sourcemod>
 #include <confogl>      // LGO_IsMatchModeLoaded / LGO_OnMatchModeUnloaded
 
-#define PLUGIN_VERSION "1.1.1"
+#define PLUGIN_VERSION "1.2.0"
 #define WATCHDOG_TAG   "[ModeWatchdog]"
 #define NATIVE_MATCH_LOADED "LGO_IsMatchModeLoaded"
 #define FORCE_COOLDOWN 60      // 秒：两次自动强制加载之间的最小间隔
-#define HEAL_FIRST_DELAY 30    // 秒：confogl 消失多久后先试"无锁"重载
-#define HEAL_FORCE_DELAY 90    // 秒：还没回来就 load_unlock + refresh 刷根目录插件
+#define HEAL_FIRST_DELAY 30    // 秒：confogl 消失多久后先解锁并重载 left4dhooks/confoglcompmod
+#define HEAL_FORCE_DELAY 90    // 秒：还没回来再补 refresh 把 plugins/ 整个扫一圈装回来
 #define HEAL_COOLDOWN 60       // 秒：两次自愈动作之间的最小间隔
 
 ConVar g_cvEnable;
@@ -114,7 +115,7 @@ public void OnPluginStart()
     // 与"当前跑哪个模式"无关的三条保镖（见文件头注释）
     g_cvNoHibernate    = CreateConVar("sm_watchdog_no_hibernate", "1", "1 = 任何模式下都强制 sv_hibernate_when_empty 0（休眠会冻结 SourceMod timer，空服自动化全部停摆）", _, true, 0.0, true, 1.0);
     g_cvForeignTimeout = CreateConVar("sm_watchdog_foreign_timeout", "120.0", "空服且跑的不是 sm_watchdog_mode 时，空置超过该秒数仍未回到我们的模式就强制切回（仅无真人时生效；0 = 关闭）", _, true, 0.0, true, 3600.0);
-    g_cvHeal           = CreateConVar("sm_watchdog_heal", "1", "1 = confoglcompmod 长时间消失时尝试自愈（先无锁重载；90 秒还没回来就 load_unlock + refresh）；故意锁加载的玩法（War Mode 等）设 0", _, true, 0.0, true, 1.0);
+    g_cvHeal           = CreateConVar("sm_watchdog_heal", "1", "1 = confoglcompmod 长时间消失时尝试自愈（30 秒：load_unlock + 重载 left4dhooks/confoglcompmod；90 秒：refresh 全量重扫）；故意锁加载的玩法（War Mode 等）设 0", _, true, 0.0, true, 1.0);
 
     HookConVarChange(g_cvNoHibernate, OnNoHibernateCvarChanged);
 
@@ -237,9 +238,10 @@ Action Cmd_Watchdog(int client, int args)
         g_cvOnlyEmpty.BoolValue,
         g_cvDelay.FloatValue,
         g_cvRetry.FloatValue);
-    ReplyToCommand(client, "%s confogl=%s matchmode_loaded=%s humans=%d pending=%s",
+    ReplyToCommand(client, "%s confogl=%s left4dhooks=%s matchmode_loaded=%s humans=%d pending=%s",
         WATCHDOG_TAG,
         ConfoglReady() ? "yes" : "no",
+        LibraryExists("left4dhooks") ? "yes" : "no",
         (ConfoglReady() && LGO_IsMatchModeLoaded()) ? "yes" : "no",
         CountHumans(),
         (g_hPending != null) ? "yes" : "no");
@@ -480,10 +482,11 @@ void CheckForeignMode(const char[] szMode, const char[] szCurrent)
 // confoglcompmod.smx 长时间不可用时把根目录插件刷回来。正常情况下它只会在"模式加载的空窗"
 // 里短暂消失（几秒内就被 cfg 链装回来），所以先等 30 秒再动手；一个"完整加载"正在进行时
 // （confogl_match_reloaded != 0）不掺和，除非它卡了 90 秒以上（那说明这次加载已经断了）。
-//   第一级（30s）：只发 sm plugins load——加载锁还挂着（War Mode 等故意为之的状态）时
-//                 会被锁拒绝，不会把那种状态弄坏。
-//   第二级（90s）：load_unlock + sm plugins refresh。refresh 在锁生效时是静默空转，
-//                 所以必须先解锁；它会把 plugins/ 根目录的插件（含 confoglcompmod）整套装回来。
+//   第一级（30s）：load_unlock + 重载 left4dhooks / confoglcompmod。必须先解锁：模式加载
+//                 中断后 sm plugins load_lock 会一直挂着，带锁的 load 全部静默空转（只打
+//                 控制台、不进日志）——这正是"点了没反应、手动却行"的坑。
+//   第二级（90s）：再补一次 load_unlock + sm plugins refresh——重新扫描整个 plugins/，
+//                 把还缺席的插件（含各种依赖 left4dhooks 而 <Error> 的）一次性装回来。
 void TryHealConfogl()
 {
     if (!g_cvHeal.BoolValue || g_iConfoglMissingSince == 0)
@@ -515,8 +518,9 @@ void TryHealConfogl()
             return;
         }
 
-        LogMessage("%s confogl has been gone for %ds, trying to load confoglcompmod.smx",
-            WATCHDOG_TAG, iMissing);
+        LogMessage("%s confogl has been gone for %ds (left4dhooks=%s), unlocking and reloading left4dhooks + confoglcompmod",
+            WATCHDOG_TAG, iMissing, LibraryExists("left4dhooks") ? "yes" : "no");
+        ServerCommand("sm plugins load_unlock");
         ServerCommand("sm plugins load left4dhooks.smx");
         ServerCommand("sm plugins load confoglcompmod.smx");
     }
@@ -528,8 +532,8 @@ void TryHealConfogl()
             hReloaded.SetInt(0);
         }
 
-        LogMessage("%s confogl still gone after %ds, forcing load_unlock + plugins refresh",
-            WATCHDOG_TAG, iMissing);
+        LogMessage("%s confogl still gone after %ds (left4dhooks=%s), forcing load_unlock + plugins refresh",
+            WATCHDOG_TAG, iMissing, LibraryExists("left4dhooks") ? "yes" : "no");
         ServerCommand("sm plugins load_unlock");
         ServerCommand("sm plugins refresh");
     }
