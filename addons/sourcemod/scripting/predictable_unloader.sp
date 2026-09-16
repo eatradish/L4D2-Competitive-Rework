@@ -46,6 +46,13 @@
 * - Added sPlugin which will store this plugin's path on load, rather than looking it up during the "UnloadPlugins" function.
 * - Added Timers for closing functionality of UnloadPlugins to ensure accuracy.
 *
+* v1.2.3
+* ------------------------
+* - Unload commands are now issued in small batches (BATCH_SIZE per batch + a sentinel command)
+*   instead of one big burst of ~150 commands. The burst could overflow the engine command buffer;
+*   the dropped tail was then replayed late by command_buffer.smx AFTER "sm plugins refresh" had
+*   already run, silently unloading early-loaded plugins (left4dhooks.smx etc.) with no log entry.
+*
 ***************************************************************************************************************************************************************************************************
 * ------------------------
 * -------- NOTES: --------
@@ -54,20 +61,26 @@
 *
 ******************************************************************/
 
+#define BATCH_SIZE 20 // Safe margin: the engine command buffer fit ~127 unload commands before overflowing.
+
 Handle aReservedPlugins;
 char sPlugin[PLATFORM_MAX_PATH];
+
+int g_iUnloadCursor = -1;
+bool g_bUnloading = false;
 
 public Plugin myinfo = 
 {
 	name = "Predictable Plugin Unloader",
 	author = "Sir (heavily influenced by keyCat)",
-	version = "1.2.2",
+	version = "1.2.3",
 	description = "Allows for unloading plugins from last to first."
 }
 
 public void OnPluginStart()
 {
 	RegServerCmd("pred_unload_plugins", UnloadPlugins, "Unload Plugins!");
+	RegServerCmd("pred_unload_continue", ContinueUnload, "Continue the batched unload. (Internal)");
 
 	// Gotta reserve ourself of course.
 	// - Supports moving the plugin to another folder. (INVALID_HANDLE simply gets the calling plugin)
@@ -98,17 +111,50 @@ Action UnloadPlugins(int args)
 
 	ServerCommand("sm plugins load_unlock");
 
-	for (int iSize = GetArraySize(aReservedPlugins); iSize > 0; iSize--)
+	// Issue the unloads in small batches. Dumping all ~150 "sm plugins unload" commands at once
+	// could overflow the engine command buffer; the dropped tail was replayed late by command_buffer.smx
+	// after "sm plugins refresh" had already run, silently unloading early-loaded plugins
+	// (left4dhooks.smx and friends) with no log entry.
+	g_iUnloadCursor = GetArraySize(aReservedPlugins);
+	g_bUnloading = true;
+	IssueUnloadBatch();
+
+	return Plugin_Handled;
+}
+
+void IssueUnloadBatch()
+{
+	char sReserved[PLATFORM_MAX_PATH];
+
+	for (int iIssued = 0; iIssued < BATCH_SIZE && g_iUnloadCursor > 0; iIssued++)
 	{
-		char sReserved[PLATFORM_MAX_PATH];
-		GetArrayString(aReservedPlugins, iSize - 1, sReserved, sizeof(sReserved)); // -1 because of how arrays work. :)
+		g_iUnloadCursor--; // Unload from last loaded to first loaded.
+		GetArrayString(aReservedPlugins, g_iUnloadCursor, sReserved, sizeof(sReserved));
 		ServerCommand("sm plugins unload %s", sReserved);
 	}
 
-	// Refresh first, then unload this plugin.
-	// Using Timers because these are time crucial and ServerCommands aren't a 100% reliable in terms of execution order.
-	CreateTimer(0.1, RefreshPlugins);
-	CreateTimer(0.5, UnloadSelf);
+	if (g_iUnloadCursor > 0)
+	{
+		// The command buffer executes in order, so this sentinel runs only after the batch above is done.
+		ServerCommand("pred_unload_continue");
+	}
+	else
+	{
+		g_bUnloading = false;
+
+		// Refresh first, then unload this plugin.
+		// Using Timers because these are time crucial and ServerCommands aren't a 100% reliable in terms of execution order.
+		CreateTimer(0.1, RefreshPlugins);
+		CreateTimer(0.5, UnloadSelf);
+	}
+}
+
+Action ContinueUnload(int args)
+{
+	if (!g_bUnloading)
+		return Plugin_Handled;
+
+	IssueUnloadBatch();
 
 	return Plugin_Handled;
 }
