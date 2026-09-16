@@ -53,6 +53,15 @@
 *   the dropped tail was then replayed late by command_buffer.smx AFTER "sm plugins refresh" had
 *   already run, silently unloading early-loaded plugins (left4dhooks.smx etc.) with no log entry.
 *
+* v1.2.4
+* ------------------------
+* - The finishing step ("sm plugins refresh") is now issued in-line through the sentinel chain
+*   instead of by a frame timer. Timers need a running frame loop; if the empty server stalls or
+*   hibernates before they fire, the reload is silently lost and the server is left with no mode,
+*   no watchdog and no base commands ("only this plugin is left on the server").
+* - This plugin no longer unloads itself: it stays in memory as the last survivor, clears its
+*   list on every run, and keeps sv_hibernate_when_empty pinned to 0 while loaded.
+*
 ***************************************************************************************************************************************************************************************************
 * ------------------------
 * -------- NOTES: --------
@@ -69,11 +78,14 @@ char sPlugin[PLATFORM_MAX_PATH];
 int g_iUnloadCursor = -1;
 bool g_bUnloading = false;
 
+ConVar g_hHibernate = null;
+bool   g_bNoHibIgnore = false;
+
 public Plugin myinfo = 
 {
 	name = "Predictable Plugin Unloader",
 	author = "Sir (heavily influenced by keyCat)",
-	version = "1.2.3",
+	version = "1.2.4",
 	description = "Allows for unloading plugins from last to first."
 }
 
@@ -88,10 +100,15 @@ public void OnPluginStart()
 
 	// Reserved Plugins
 	aReservedPlugins = CreateArray(PLATFORM_MAX_PATH);
+
+	EnforceNoHibernate();
 }
 
 Action UnloadPlugins(int args) 
 {
+	// Fresh list each run (this plugin stays loaded between teardowns).
+	ClearArray(aReservedPlugins);
+
 	char stockpluginname[64];
 	Handle pluginIterator = GetPluginIterator();
 	Handle currentPlugin;
@@ -101,7 +118,7 @@ Action UnloadPlugins(int args)
 		currentPlugin = ReadPlugin(pluginIterator);
 		GetPluginFilename(currentPlugin, stockpluginname, sizeof(stockpluginname));
 
-		// We're not pushing this plugin itself into the array as we'll unload it on a timer at the end.
+		// We don't push this plugin itself: it stays loaded as the last survivor (see v1.2.4).
 		if (!StrEqual(sPlugin, stockpluginname)) 
 		  PushArrayString(aReservedPlugins, stockpluginname);
 	}
@@ -133,20 +150,8 @@ void IssueUnloadBatch()
 		ServerCommand("sm plugins unload %s", sReserved);
 	}
 
-	if (g_iUnloadCursor > 0)
-	{
-		// The command buffer executes in order, so this sentinel runs only after the batch above is done.
-		ServerCommand("pred_unload_continue");
-	}
-	else
-	{
-		g_bUnloading = false;
-
-		// Refresh first, then unload this plugin.
-		// Using Timers because these are time crucial and ServerCommands aren't a 100% reliable in terms of execution order.
-		CreateTimer(0.1, RefreshPlugins);
-		CreateTimer(0.5, UnloadSelf);
-	}
+	// The command buffer executes in order, so this sentinel runs only after the batch above is done.
+	ServerCommand("pred_unload_continue");
 }
 
 Action ContinueUnload(int args)
@@ -154,21 +159,50 @@ Action ContinueUnload(int args)
 	if (!g_bUnloading)
 		return Plugin_Handled;
 
-	IssueUnloadBatch();
+	if (g_iUnloadCursor > 0)
+	{
+		IssueUnloadBatch();
+		return Plugin_Handled;
+	}
+
+	// Final phase: every unload command has executed by now (sentinel ordering guarantees it).
+	// Reload the root plugin set in-line through the command buffer - NOT via a frame timer,
+	// because a timer needs a running frame loop: if the empty server stalls or hibernates before
+	// it fires, the reload is silently lost (no mode, no watchdog, no base commands - v1.2.4 fix).
+	g_bUnloading = false;
+	ServerCommand("sm plugins refresh");
 
 	return Plugin_Handled;
 }
 
-Action RefreshPlugins(Handle timer)
+// Keep "no hibernation when empty" enforced while this plugin is loaded. The mode teardown unloads
+// every other plugin (including the watchdog) before the root set is reloaded - if hibernation were
+// allowed in that window, SourceMod timers would freeze and nothing would ever come back.
+void EnforceNoHibernate()
 {
-	ServerCommand("sm plugins refresh");
+	if (g_hHibernate == null)
+	{
+		g_hHibernate = FindConVar("sv_hibernate_when_empty");
+		if (g_hHibernate == null)
+			return;
 
-	return Plugin_Stop;
+		HookConVarChange(g_hHibernate, OnHibernateChanged);
+	}
+
+	if (g_hHibernate.IntValue != 0)
+	{
+		g_bNoHibIgnore = true;
+		g_hHibernate.SetInt(0);
+		g_bNoHibIgnore = false;
+	}
 }
 
-Action UnloadSelf(Handle timer)
+public void OnHibernateChanged(ConVar convar, const char[] oldValue, const char[] newValue)
 {
-	ServerCommand("sm plugins unload %s", sPlugin);
+	if (g_bNoHibIgnore || convar.IntValue == 0)
+		return;
 
-	return Plugin_Stop;
+	g_bNoHibIgnore = true;
+	convar.SetInt(0);
+	g_bNoHibIgnore = false;
 }
