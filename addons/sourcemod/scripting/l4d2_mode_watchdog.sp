@@ -37,6 +37,10 @@
 //      空转）；90 秒还没回来再补 sm plugins refresh 把整个 plugins/ 扫一遍装回来。
 //   4) 状态追踪：left4dhooks / confogl 每次"由有变无 / 由无变有"都会写一行带地图名的日志
 //      （addons/sourcemod/logs），用时间戳抓"是谁在什么时候把 left4dhooks 弄没的"。
+//   5) "confogl 在不在"用 LibraryExists("confogl") 判定（只有正在运行的 confoglcompmod
+//      注册该库）。不能用 native 状态：confogl 被连锁 Error 时会谎报 Available，随后调用
+//      LGO_* 直接抛异常（errors 日志里的 Blaming: l4d2_mode_watchdog.smx），异常把整次
+//      检查打断、自愈分支永远跑不到。
 //      （match_vote 的 "Confogl is not available"、连 sm_forcematch 都变 Unknown command
 //       时，没有这条就只能人工进服重载。）
 // =======================================================================================
@@ -47,7 +51,7 @@
 #include <sourcemod>
 #include <confogl>      // LGO_IsMatchModeLoaded / LGO_OnMatchModeUnloaded
 
-#define PLUGIN_VERSION "1.3.0"
+#define PLUGIN_VERSION "1.3.1"
 #define WATCHDOG_TAG   "[ModeWatchdog]"
 #define NATIVE_MATCH_LOADED "LGO_IsMatchModeLoaded"
 #define FORCE_COOLDOWN 60      // 秒：两次自动强制加载之间的最小间隔
@@ -914,7 +918,12 @@ void TrackLibraryStates()
 
 bool ConfoglReady()
 {
-    return GetFeatureStatus(FeatureType_Native, NATIVE_MATCH_LOADED) == FeatureStatus_Available;
+    // 用库检查而不是 GetFeatureStatus(native)：confoglcompmod 被"连锁 Error"（evict）后的
+    // 半死状态里，native 检查会谎报 Available，守卫放行后真正调用 LGO_* 会抛异常
+    // （errors 日志反复出现的 "Blaming: l4d2_mode_watchdog.smx" 就是它）——异常会把整次
+    // RunCheck 打断，自愈分支永远执行不到。只有"正在运行"的 confoglcompmod 才会注册
+    // "confogl" 库（confoglcompmod.sp AskPluginLoad2），Error/卸载后立即为 false。
+    return LibraryExists("confogl");
 }
 
 // 真人数量：连着的就算（含正在 sign-on 的），避免在别人进服过程中重开图
