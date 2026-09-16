@@ -22,6 +22,16 @@
 // 与 confogl 内置 confogl_match_autoload 的区别：
 //   内置那个挂在 OnClientPutInServer，会在首个玩家还没完成 sign-on 时重开图，
 //   导致该玩家客户端崩溃（上游 PR #1010）。本插件只在"没有真人在局内"时动手。
+//
+// 2026-09-16 补两个与"当前跑哪个模式"无关的保镖
+//（修复：房内 !match 了 1v1 zonemod 之后，服务器休眠/空置时没有回到 pure）：
+//   1) sm_watchdog_no_hibernate（默认 1）——无条件把 sv_hibernate_when_empty 压在 0。
+//      休眠会冻结 SourceMod timer：confogl 的 60s 空服自动卸载、本插件的所有检查都会
+//      停摆。而钉值只在 sm_watchdog_mode（默认 pure）运行期间生效，跑 zm1v1 这类模式时
+//      早已释放——空服一旦休眠，服务器就卡死在那个模式里出不来。所以这条不跟模式走。
+//   2) sm_watchdog_foreign_timeout（默认 120s）——空服时如果跑的仍是别的模式（confogl
+//      的 60s 卸载没发生：被休眠冻住；或空服时从控制台加载、没人离开就不会有 60s 计时器），
+//      超过该秒数就 sm_forcechangematch 切回我们的模式；只在没有真人时生效。
 // =======================================================================================
 
 #pragma semicolon 1
@@ -30,7 +40,7 @@
 #include <sourcemod>
 #include <confogl>      // LGO_IsMatchModeLoaded / LGO_OnMatchModeUnloaded
 
-#define PLUGIN_VERSION "1.0.0"
+#define PLUGIN_VERSION "1.1.0"
 #define WATCHDOG_TAG   "[ModeWatchdog]"
 #define NATIVE_MATCH_LOADED "LGO_IsMatchModeLoaded"
 #define FORCE_COOLDOWN 60      // 秒：两次自动强制加载之间的最小间隔
@@ -41,10 +51,17 @@ ConVar g_cvDelay;
 ConVar g_cvOnlyEmpty;
 ConVar g_cvRetry;
 ConVar g_cvDebug;
+ConVar g_cvNoHibernate;        // 无条件保持"空服不休眠"（与模式无关）
+ConVar g_cvForeignTimeout;     // 空服时跑着别的模式的兜底切回秒数
 
 Handle g_hPending = null;
 bool   g_bActing  = false;
 int    g_iLastForceTime = 0;   // 上次自动强制加载的时间（GetTime，秒）
+int    g_iLastHumanTime = 0;   // 最近一次见到真人的时间；0 = 本次加载后还没见过（GetTime，秒）
+
+// ---- 空服不休眠（sv_hibernate_when_empty 无条件压 0，见 EnforceNoHibernate）----
+ConVar g_hHibernate = null;
+bool   g_bHibernateHooked = false;
 
 // ---- cvar 钉值（思路来自 TouchMe-Inc/l4d2_config_manager 的 config_manager_addcvar）----
 // 模式在跑期间，把清单里的 cvar 钉住：谁改动都被立刻顶回去（引擎每图 Revert、别的插件、
@@ -84,6 +101,12 @@ public void OnPluginStart()
     g_cvRetry     = CreateConVar("sm_watchdog_retry", "30.0", "因为有人在局内而被跳过时，多少秒后重试；0 = 不重试（等下一个触发点）", _, true, 0.0, true, 600.0);
     g_cvDebug     = CreateConVar("sm_watchdog_debug", "0", "1 = 输出详细日志", _, true, 0.0, true, 1.0);
 
+    // 与"当前跑哪个模式"无关的两条保镖（见文件头注释）
+    g_cvNoHibernate    = CreateConVar("sm_watchdog_no_hibernate", "1", "1 = 任何模式下都强制 sv_hibernate_when_empty 0（休眠会冻结 SourceMod timer，空服自动化全部停摆）", _, true, 0.0, true, 1.0);
+    g_cvForeignTimeout = CreateConVar("sm_watchdog_foreign_timeout", "120.0", "空服且跑的不是 sm_watchdog_mode 时，空置超过该秒数仍未回到我们的模式就强制切回（仅无真人时生效；0 = 关闭）", _, true, 0.0, true, 3600.0);
+
+    HookConVarChange(g_cvNoHibernate, OnNoHibernateCvarChanged);
+
     g_cvPinEnable = CreateConVar("sm_watchdog_pin_enable", "1", "1 = 模式在跑期间钉住 sm_watchdog_pins_file 里列出的 cvar（别人改动会被立刻顶回去）", _, true, 0.0, true, 1.0);
     g_cvPinsFile  = CreateConVar("sm_watchdog_pins_file", "watchdog_pins.cfg", "钉值清单（相对 cfg/ 的路径）");
 
@@ -99,6 +122,7 @@ public void OnPluginStart()
 
     // 插件加载时来一次（开机、以及拆卸后 refresh 重新加载本插件时）
     MaybeApplyPins();
+    EnforceNoHibernate();
     ScheduleCheck(g_cvDelay.FloatValue, "plugin start");
 }
 
@@ -107,6 +131,7 @@ public void OnPluginStart()
 public void OnAllPluginsLoaded()
 {
     MaybeApplyPins();
+    EnforceNoHibernate();
     ScheduleCheck(g_cvDelay.FloatValue, "all plugins loaded");
 }
 
@@ -114,6 +139,7 @@ public void OnAllPluginsLoaded()
 public void OnMapStart()
 {
     MaybeApplyPins();
+    EnforceNoHibernate();
     ScheduleCheck(g_cvDelay.FloatValue, "map start");
 }
 
@@ -138,12 +164,17 @@ public void LGO_OnMatchModeUnloaded()
 // 模式加载完成后把钉值压上（延迟 2s，等模式自己的 cfg 执行完）
 public void LGO_OnMatchModeLoaded()
 {
+    // "空服起点"从模式加载这一刻重算：防止刚加载的模式（尤其空服从控制台加载的）
+    // 被记成"已经空置了很久"，让 foreign 兜底立刻开火
+    g_iLastHumanTime = GetTime();
+
     CreateTimer(2.0, Timer_ApplyPins, _, TIMER_FLAG_NO_MAPCHANGE);
 }
 
 Action Timer_ApplyPins(Handle hTimer)
 {
     MaybeApplyPins();
+    EnforceNoHibernate();
 
     return Plugin_Stop;
 }
@@ -163,6 +194,8 @@ public void OnClientDisconnect(int client)
     {
         return;
     }
+
+    g_iLastHumanTime = GetTime();   // foreign 兜底的"空服起点"
 
     ScheduleCheck(5.0, "client disconnected");
 }
@@ -205,6 +238,15 @@ Action Cmd_Watchdog(int client, int args)
         g_cvPinEnable.BoolValue,
         (g_smPinned != null) ? g_smPinned.Size : 0,
         g_bPinsApplied ? "yes" : "no");
+
+    char szHibernate[16] = "?";
+    if (g_hHibernate != null)
+    {
+        g_hHibernate.GetString(szHibernate, sizeof(szHibernate));
+    }
+
+    ReplyToCommand(client, "%s no_hibernate=%d (sv_hibernate_when_empty=%s) foreign_timeout=%.1fs",
+        WATCHDOG_TAG, g_cvNoHibernate.BoolValue, szHibernate, g_cvForeignTimeout.FloatValue);
 
     return Plugin_Handled;
 }
@@ -265,10 +307,19 @@ void RunCheck(bool bIgnoreEmpty)
         return;
     }
 
-    // confogl 还没加载好（拆卸和 refresh 之间的窗口）-> 稍后重试
     if (ConfoglReady() && LGO_IsMatchModeLoaded())
     {
-        DebugLog("match mode already loaded, nothing to do");
+        char szCurrent[64];
+        LGO_GetConfigName(szCurrent, sizeof(szCurrent));
+
+        if (StrEqual(szCurrent, szMode, false))
+        {
+            DebugLog("match mode already loaded, nothing to do");
+            return;
+        }
+
+        // 跑的是别的模式（例如房内 !match 开的 zm1v1）：交给空服兜底（见 CheckForeignMode）
+        CheckForeignMode(szMode, szCurrent);
         return;
     }
 
@@ -293,6 +344,7 @@ void RunCheck(bool bIgnoreEmpty)
 
     if (g_cvOnlyEmpty.BoolValue && !bIgnoreEmpty && iHumans > 0)
     {
+        g_iLastHumanTime = GetTime();
         float fRetry = g_cvRetry.FloatValue;
         DebugLog("%d human(s) in game, skip and retry in %.1fs", iHumans, fRetry);
 
@@ -308,7 +360,12 @@ void RunCheck(bool bIgnoreEmpty)
     int iNow = GetTime();
     if (!bIgnoreEmpty && g_iLastForceTime > 0 && (iNow - g_iLastForceTime) < FORCE_COOLDOWN)
     {
-        DebugLog("force cooldown active (%ds left)", FORCE_COOLDOWN - (iNow - g_iLastForceTime));
+        int iLeft = FORCE_COOLDOWN - (iNow - g_iLastForceTime);
+        DebugLog("force cooldown active (%ds left)", iLeft);
+
+        // 冷却里也要续上重试，否则加载失败后会一直干等到下一个触发点
+        ScheduleCheck(float(iLeft) + 1.0, "force cooldown");
+
         return;
     }
 
@@ -324,6 +381,157 @@ void RunCheck(bool bIgnoreEmpty)
     ScheduleCheck(15.0, "verify after force");
 
     g_bActing = false;
+}
+
+// =======================================================================================
+// 空服兜底：别的模式占着不放
+// =======================================================================================
+
+// 空服时跑着"别的模式"（例如房内 !match 投票开的 zm1v1）：
+//   * 正常情况下 confogl 自己的 60s 空服计时器会把它卸载，然后 RunCheck 的"无模式"分支
+//     把我们的模式拉回来（注意那个计时器要有人断线才会开始走 —— 空服从控制台加载的模式没有）。
+//   * 但休眠会冻结 SourceMod timer，两条路都会停摆；这里按"空置时长"兜底：空置超过
+//     sm_watchdog_foreign_timeout 秒还没回到我们的模式，就强制 sm_forcechangematch 切回。
+// 只在没有真人时生效 —— 切模式会重开图，绝不打断在局玩家。
+void CheckForeignMode(const char[] szMode, const char[] szCurrent)
+{
+    float fTimeout = g_cvForeignTimeout.FloatValue;
+    if (fTimeout <= 0.0)
+    {
+        DebugLog("foreign mode \"%s\" loaded, sm_watchdog_foreign_timeout is off", szCurrent);
+        return;
+    }
+
+    int iHumans = CountHumans();
+    if (iHumans > 0)
+    {
+        g_iLastHumanTime = GetTime();
+        DebugLog("foreign mode \"%s\" with %d human(s), leave it alone", szCurrent, iHumans);
+        return;
+    }
+
+    int iNow = GetTime();
+
+    if (g_iLastHumanTime == 0)
+    {
+        // 本次加载后还没见过真人：已经空置多久无从考证，从现在开始计时
+        g_iLastHumanTime = iNow;
+        DebugLog("foreign mode \"%s\": no humans seen since load, start empty timer (%.0fs)", szCurrent, fTimeout);
+        ScheduleCheck(fTimeout, "foreign mode empty timer");
+        return;
+    }
+
+    float fEmpty = float(iNow - g_iLastHumanTime);
+
+    if (fEmpty < fTimeout)
+    {
+        DebugLog("foreign mode \"%s\": empty for %.0fs of %.0fs", szCurrent, fEmpty, fTimeout);
+        ScheduleCheck((fTimeout - fEmpty < 60.0) ? (fTimeout - fEmpty) : 60.0, "foreign mode waiting");
+        return;
+    }
+
+    if (g_iLastForceTime > 0 && (iNow - g_iLastForceTime) < FORCE_COOLDOWN)
+    {
+        int iLeft = FORCE_COOLDOWN - (iNow - g_iLastForceTime);
+        DebugLog("force cooldown active (%ds left)", iLeft);
+        ScheduleCheck(float(iLeft) + 1.0, "foreign mode cooldown");
+        return;
+    }
+
+    g_bActing = true;
+    g_iLastForceTime = iNow;
+
+    LogMessage("%s \"%s\" is still loaded %.0fs after the server went empty, switching to \"%s\"",
+        WATCHDOG_TAG, szCurrent, fEmpty, szMode);
+
+    ServerCommand("sm_forcechangematch %s", szMode);
+
+    ScheduleCheck(15.0, "verify after foreign mode switch");
+
+    g_bActing = false;
+}
+
+// =======================================================================================
+// 空服不休眠（与模式无关）
+// =======================================================================================
+
+// sv_hibernate_when_empty 必须是 0，无论当前跑哪个模式：
+//   * 休眠会冻结 SourceMod timer —— confogl 的 60s 空服自动卸载、本插件的所有检查全部停摆；
+//   * 跑非 pure 模式时钉值已经释放，如果这时允许休眠，空服就会卡死在那个模式里（本插件也
+//     救不回来，因为 timer 不走：重连的人还在的时候 confogl 又不会卸载）。
+// 与钉值的区别：不记录/还原原值、不随模式卸载释放 —— 就是一直压在 0。管理员显式关掉
+// sm_watchdog_no_hibernate、或把它加进钉值清单交给钉值机制接管时除外。
+void EnforceNoHibernate()
+{
+    if (!g_cvNoHibernate.BoolValue)
+    {
+        return;
+    }
+
+    if (g_hHibernate == null)
+    {
+        g_hHibernate = FindConVar("sv_hibernate_when_empty");
+        if (g_hHibernate == null)
+        {
+            DebugLog("no-hibernate: sv_hibernate_when_empty not found");
+            return;
+        }
+    }
+
+    // 管理员用 sm_watchdog_pin 单独钉过它的话，让钉值机制说了算
+    if (g_smPinned != null && g_smPinned.ContainsKey("sv_hibernate_when_empty"))
+    {
+        return;
+    }
+
+    if (!g_bHibernateHooked)
+    {
+        HookConVarChange(g_hHibernate, OnHibernateChanged);
+        g_bHibernateHooked = true;
+    }
+
+    if (g_hHibernate.IntValue != 0)
+    {
+        DebugLog("no-hibernate: sv_hibernate_when_empty %d -> 0", g_hHibernate.IntValue);
+
+        g_bPinIgnore = true;
+        SetConVarStringSilence(g_hHibernate, "0");
+        g_bPinIgnore = false;
+    }
+}
+
+// 谁把它改成非 0 都顶回 0（引擎每图/其它插件/控制台）
+public void OnHibernateChanged(ConVar convar, const char[] szOldValue, const char[] szNewValue)
+{
+    if (g_bPinIgnore || !g_cvNoHibernate.BoolValue)
+    {
+        return;
+    }
+
+    if (StrEqual(szNewValue, "0"))
+    {
+        return;
+    }
+
+    if (g_smPinned != null && g_smPinned.ContainsKey("sv_hibernate_when_empty"))
+    {
+        return;
+    }
+
+    DebugLog("no-hibernate: reverted sv_hibernate_when_empty from \"%s\" to \"0\"", szNewValue);
+
+    g_bPinIgnore = true;
+    SetConVarStringSilence(convar, "0");
+    g_bPinIgnore = false;
+}
+
+// sm_watchdog_no_hibernate 被打开时立刻补一次
+public void OnNoHibernateCvarChanged(ConVar convar, const char[] szOldValue, const char[] szNewValue)
+{
+    if (convar.BoolValue)
+    {
+        EnforceNoHibernate();
+    }
 }
 
 // =======================================================================================
